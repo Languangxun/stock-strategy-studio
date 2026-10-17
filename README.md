@@ -1,6 +1,6 @@
-# 股票策略工坊 v0.1.0
+# 股票策略工坊 v0.1.1
 
-> 技术文档：[`docs/TECHNICAL.md`](docs/TECHNICAL.md) · 版本 0.1.0
+> 技术文档：[`docs/TECHNICAL.md`](docs/TECHNICAL.md) · 版本 0.1.1
 
 一个面向 A 股的本地策略研究与回测工具：
 
@@ -11,6 +11,7 @@
 - **高对比 GUI**：纯黑背景、亮青强调色、纯白文字；默认 **红涨绿跌**；参数表单、净值/回撤曲线、K 线交易点、交易明细、日志。
 - **K 线交互**：滚轮缩放、拖拽平移、十字光标、成交量、MA/EMA 均线和买卖标记。
 - **个性化设置**：上涨/下跌/买卖/策略线/基准线/回撤线/均线颜色，MA/EMA 类型与周期，自定义指标默认参数。
+- **生成量化 / SSH 部署**：按当前策略生成 AKQuant 量化项目，输入 IP 和密码即可上传并在服务器自动安装依赖。
 - **全市场逐股回测**：从本地数据库读取全部 A 股，批量回测、汇总统计、排序、导出；每只股票独立本金。
 - **本地数据导入**：导入窗口支持直接拖入 CSV / SQLite 文件或文件夹，写入 SQLite 后单股和全市场回测优先读取本地。
 - **NumPy + Rust**：指标计算使用 NumPy/Pandas，成交撮合与资金曲线使用 Rust（ctypes）加速，失败自动回退 Python。
@@ -27,6 +28,10 @@
 个性化设置（颜色与指标参数）：
 
 ![个性化设置](assets/settings.png)
+
+生成量化与 SSH 自动安装：
+
+![生成量化与 SSH 安装](assets/quant.png)
 
 本地数据导入（支持拖放）：
 
@@ -59,8 +64,9 @@ cd ~/桌面/stock_strategy_studio
 系统要求：
 - Python 3.10+
 - Tkinter
-- `akshare`、`pandas`、`numpy`、`lightgbm`、`tkinterdnd2`（拖拽导入）
+- `akshare`、`pandas`、`numpy`、`lightgbm`、`tkinterdnd2`（拖拽导入）、`paramiko`（SSH 部署）
 - Rust（可选，用于回测加速；未安装时自动回退 Python）
+- AKQuant 只在生成/远程安装的量化项目中使用，由项目自身 requirements 安装
 
 ### 命令行
 
@@ -102,6 +108,7 @@ cd ~/桌面/stock_strategy_studio
    - 可导出 CSV/JSON/Markdown 报告。
 6. **左侧栏**：鼠标悬停在左侧任意位置即可滚轮滚动；窗口较小时无需拖拽滚动条。
 7. **顶部按钮**：「导入数据」打开本地行情导入窗口；「全市场回测」使用主界面当前策略、参数和交易设置扫描本地全部 A 股；「设置」打开颜色和指标参数面板。
+8. **生成量化**：左侧策略区「生成量化 · AKQuant 项目 / SSH 自动安装」，按当前策略快照生成 AKQuant 项目，并支持远程安装。
 
 ---
 
@@ -117,6 +124,49 @@ cd ~/桌面/stock_strategy_studio
 - 保存后立即重绘当前图表，并更新指标卡、交易明细和全市场结果的红绿颜色。
 - 设置保存到 `config/settings.json`（本机配置，不纳入仓库）。
 - 「恢复默认」可回到红涨绿跌、MA5/10/20 和标准指标参数。
+
+---
+
+## 生成量化与 SSH 自动安装
+
+v0.1.1 新增「生成量化」按钮，当前采用 **AKQuant 信号回放回测架构**：
+
+1. 使用主界面当前策略、参数、股票、区间和交易设置生成项目。
+2. 桌面端运行策略，导出 `data/bars.csv`、`data/signals.csv` 和参考结果。
+3. 生成 AKQuant `Strategy` 项目，AKQuant 负责回测执行、T+1、整手和费用统计。
+4. 可在本地生成，也可输入服务器 IP、端口、用户名、密码，自动上传并安装。
+
+生成项目结构：
+
+```text
+akquant_<策略>_<代码>_<时间>/
+├── config.json
+├── data/
+│   ├── bars.csv
+│   └── signals.csv
+├── quant_app/
+│   ├── strategy.py       # AKQuant Strategy（信号回放）
+│   └── backtest.py
+├── requirements.txt      # akquant==0.3.67 等
+├── run.sh
+├── reference/            # 桌面端参考交易与指标
+└── README.md
+```
+
+SSH 安装流程：
+
+1. SSH 连接并上传项目压缩包。
+2. 检查远程 Python >= 3.10。
+3. 创建 `.venv`。
+4. 安装 `requirements.txt`（含 AKQuant）。
+5. 执行 `python -m quant_app.backtest --check` 自检。
+6. 可选：安装后运行一次回测。
+
+> 当前生成物是 **AKQuant 信号回放回测项目**，信号由桌面端策略引擎生成；实时行情重算、模拟盘/实盘券商接口将在后续版本实现。
+>
+> SSH 密码仅用于本次连接，不写入项目、不写入设置、不写入日志。首次连接自动信任主机指纹；生产环境建议改用 SSH Key 和受限账户。
+
+完整说明见 [`docs/QUANT_EXPORT.md`](docs/QUANT_EXPORT.md)。
 
 ---
 
@@ -291,6 +341,8 @@ stock_strategy_studio/
 │   ├── datafeed.py            # AKShare 通道 + 缓存 + 离线示例 + 本地行情
 │   ├── importer.py            # CSV / SQLite 行情导入
 │   ├── market.py              # 全市场逐股回测
+│   ├── quant_generator.py     # 根据当前策略生成 AKQuant 项目
+│   ├── remote_deploy.py       # SSH/SFTP 上传与远程安装
 │   ├── rust_engine.py         # Rust 共享库 ctypes 封装
 │   ├── settings.py            # 用户颜色/指标默认参数
 │   ├── native/libbtcore.so    # Rust 回测加速库
@@ -319,8 +371,9 @@ stock_strategy_studio/
 │   ├── MODEL_API.md           # 模型接口文档
 │   ├── STRATEGY_API.md        # 策略接口文档
 │   ├── DATA_IMPORT.md         # 本地数据导入
+│   ├── QUANT_EXPORT.md        # 量化生成与 SSH 安装
 │   ├── RUST_BACKTEST.md       # Rust 回测加速
-│   └── TECHNICAL.md           # 技术文档（v0.1.0）
+│   └── TECHNICAL.md           # 技术文档（v0.1.1）
 ├── rust/
 │   ├── backtest_core.rs       # Rust 撮合/资金曲线
 │   └── build.sh               # 重新构建共享库
@@ -347,6 +400,7 @@ stock_strategy_studio/
 - CSV / SQLite 数据导入、本地股票池筛选；
 - 全市场逐股回测、导出；
 - Rust 与 Python 回测引擎逐笔结果一致性；
+- AKQuant 项目生成、打包、`--check` 与本地回测执行；
 - 导出 JSON / Markdown。
 
 ---
@@ -375,6 +429,13 @@ stock_strategy_studio/
 **Rust 不可用怎么办？**
 程序会自动回退 Python，功能不受影响。如果本机有 Rust，可运行 `./rust/build.sh` 重新生成
 `core/native/libbtcore.so`；运行日志会显示加载失败原因。
+
+**生成量化后，远端怎么运行？**
+安装完成后进入远程项目目录执行 `./run.sh`，或：
+```bash
+.venv/bin/python -m quant_app.backtest
+```
+首次运行会使用项目自带的行情快照和信号，不依赖桌面端在线。
 
 **自定义策略没有出现在下拉框？**
 确认已点「保存并应用」；文件会保存到 `strategies/custom/*.json`。如果 JSON 损坏，

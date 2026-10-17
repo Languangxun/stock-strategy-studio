@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 |---|---|
 | 产品名称 | 股票策略工坊 |
-| 版本 | **0.1.0** |
+| 版本 | **0.1.1** |
 | 文档版本 | 1.0 |
 | 更新日期 | 2026-10-17 |
 | 运行形态 | 本地桌面 GUI + 命令行 |
@@ -15,7 +15,7 @@
 
 ## 1. 文档说明
 
-本文档描述 0.1.0 版本的总体架构、数据模型、策略/模型接口、回测执行规则、Rust 加速、
+本文档描述 0.1.1 版本的总体架构、数据模型、策略/模型接口、回测执行规则、Rust 加速、
 全市场逐股回测、数据导入、GUI、个性化设置、构建部署与测试方法。
 
 相关文档：
@@ -24,6 +24,7 @@
 - [策略接口](STRATEGY_API.md)
 - [本地行情导入](DATA_IMPORT.md)
 - [Rust 回测加速](RUST_BACKTEST.md)
+- [量化项目生成与 SSH 安装](QUANT_EXPORT.md)
 
 ---
 
@@ -38,7 +39,8 @@
 5. CSV / SQLite 行情导入，支持拖放、自动导入、导入文件夹扫描。
 6. 高对比 GUI、红涨绿跌、K 线缩放/拖拽、交易明细与导出。
 7. 颜色、均线类型/周期、常用指标默认参数可配置。
-8. Rust 回测撮合引擎加速，失败自动回退 Python。
+8. 按当前策略生成 AKQuant 项目，支持 SSH 上传和远程自动安装。
+9. Rust 回测撮合引擎加速，失败自动回退 Python。
 
 非目标：实盘下单、分钟级撮合、多股票组合优化、券商接入、交易风控审批流。
 
@@ -96,7 +98,7 @@ stock_strategy_studio/
 ├── gui.py                     # Tkinter UI、图表、编辑器、设置、导入、全市场窗口
 ├── launch.sh                  # 启动/构建脚本
 ├── requirements.txt
-├── VERSION                    # 0.1.0
+├── VERSION                    # 0.1.1
 ├── assets/                    # 截图与图标
 ├── core/
 │   ├── backtest.py            # Python/Rust 回测结果组装与指标
@@ -105,6 +107,8 @@ stock_strategy_studio/
 │   ├── indicator_catalog.py   # 42 个条件化指标
 │   ├── indicators.py          # 基础指标函数
 │   ├── market.py              # 全市场逐股回测
+│   ├── quant_generator.py     # AKQuant 项目生成
+│   ├── remote_deploy.py       # SSH/SFTP 自动安装
 │   ├── model_api.py           # 模型接口
 │   ├── params.py              # ParamSpec/Meta
 │   ├── runner.py              # 单股回测编排与导出
@@ -406,17 +410,67 @@ Rust 负责逐日撮合和资金曲线，Python 负责信号、基准、交易�
 
 ---
 
-## 11. 构建、运行与部署
+## 11. 量化项目生成与 SSH 部署
 
-### 11.1 依赖
+### 11.1 生成流程
+
+「生成量化」按钮位于主界面策略区。流程：
+
+```text
+当前策略快照
+   ↓
+core.runner.execute() 生成 bars + signals
+   ↓
+core.quant_generator.generate_quant_project()
+   ↓
+独立 AKQuant 项目（bars.csv / signals.csv / Strategy / backtest.py）
+```
+
+- 生成的文件在 `exports/quant/akquant_<策略>_<代码>_<时间>/`。
+- 生成物包含参考回测交易和指标，便于与桌面回测对照。
+- 任意策略（内置、自定义条件、SM701）都可以生成，因为信号来自桌面策略引擎。
+
+### 11.2 AKQuant 架构
+
+当前采用 **AKQuant 信号回放**：
+
+- `quant_app/strategy.py` 继承 `akquant.Strategy`。
+- T 日收盘读取 `signals.csv`，提交买卖；AKQuant 在下一根 K 线执行。
+- T+1、整手、佣金、印花税、过户费由 AKQuant 回测配置执行。
+- 生成项目依赖 `akquant==0.3.67`、Pandas、NumPy。
+
+当前不是实时策略：行情和信号是生成时快照，实盘和实时重算将在后续版本接入。
+
+### 11.3 SSH 自动安装
+
+`core.remote_deploy` 使用 Paramiko：
+
+1. 本地 tar.gz 打包（排除 `.venv`/`output`/缓存）。
+2. SSH 密码认证 + SFTP 上传。
+3. 远程目录解压。
+4. 检查 Python >= 3.10。
+5. 创建 `.venv` 并安装 `requirements.txt`。
+6. 执行 `quant_app.backtest --check`。
+7. 可选运行一次 AKQuant 回测。
+
+密码只保存在 UI 内存，不写入文件/日志。首次连接自动接受主机指纹并记录指纹；生产环境建议使用 SSH Key。
+
+详见 [QUANT_EXPORT.md](QUANT_EXPORT.md)。
+
+---
+
+## 12. 构建、运行与部署
+
+### 12.1 依赖
 
 ```text
 Python 3.10+
-akshare, pandas, numpy, lightgbm, tkinterdnd2
+akshare, pandas, numpy, lightgbm, tkinterdnd2, paramiko
 Rust 1.70+（可选，用于回测加速）
+akquant==0.3.67（仅在生成/远程安装的 AKQuant 项目中使用）
 ```
 
-### 11.2 启动
+### 12.2 启动
 
 ```bash
 cd ~/桌面/stock_strategy_studio
@@ -429,13 +483,13 @@ cd ~/桌面/stock_strategy_studio
 2. 如果 Rust 共享库缺失且有 rustc，则自动构建。
 3. 启动 `app.py`。
 
-### 11.3 Rust 构建
+### 12.3 Rust 构建
 
 ```bash
 ./rust/build.sh
 ```
 
-### 11.4 CLI
+### 12.4 CLI
 
 ```bash
 .venv/bin/python cli.py --list-strategies
@@ -444,13 +498,13 @@ cd ~/桌面/stock_strategy_studio
 
 ---
 
-## 12. 测试
+## 13. 测试
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-当前 33 项测试覆盖：
+当前 38 项测试覆盖：
 
 - 数据缓存与离线示例
 - SM701 特征与预测
@@ -460,10 +514,12 @@ cd ~/桌面/stock_strategy_studio
 - CSV/SQLite 导入
 - 全市场逐股回测与导出
 - 用户设置保存、校验与红绿颜色默认值
+- AKQuant 项目生成、打包、`--check` 与本地回测执行
+- SSH 部署编排（模拟 Paramiko）与密码不落日志验证
 
 ---
 
-## 13. 性能
+## 14. 性能
 
 - 指标计算：Pandas/NumPy 向量化。
 - 撮合：Rust 原生循环；单股回测相对 Python 约 4~5 倍加速。
@@ -473,7 +529,7 @@ cd ~/桌面/stock_strategy_studio
 
 ---
 
-## 14. 安全与隐私
+## 15. 安全与隐私
 
 - 不包含任何 API Key；密钥不写入仓库。
 - `data/cache.db`、`config/last_session.json`、`config/settings.json`、`data/import/*` 均在 `.gitignore` 中。
@@ -483,7 +539,7 @@ cd ~/桌面/stock_strategy_studio
 
 ---
 
-## 15. 已知限制
+## 16. 已知限制
 
 - 全市场回测是**逐股独立**口径，不是组合资金/持仓回测。
 - 日线级近似：不模拟盘中滑点、涨跌停排队、停牌、除权细节。
@@ -491,10 +547,20 @@ cd ~/桌面/stock_strategy_studio
 - 图形界面使用 Tkinter，未做多语言和移动端适配。
 - Rust 预编译库与平台/CPU 相关；不支持时自动回退 Python。
 - 自定义条件编辑器只支持技术指标，不支持直接嵌套模型信号。
+- 生成量化当前为 AKQuant 信号回放项目，尚未实现实时行情重算和实盘券商接口。
+- SSH 部署使用密码认证和自动主机指纹，生产环境应改用 SSH Key。
 
 ---
 
-## 16. 版本历史
+## 17. 版本历史
+
+### 0.1.1（2026-10-17）
+
+- 新增「生成量化」按钮：基于当前策略生成 AKQuant 信号回放回测项目。
+- 新增 SSH/SFTP 自动安装：输入 IP、端口、用户名、密码，自动上传、建 venv、安装 AKQuant 与依赖、执行自检。
+- 新增生成项目参考交易/指标、项目自检与可选远程回测。
+- 新增 Paramiko 依赖与 `docs/QUANT_EXPORT.md`。
+- 版本号更新为 0.1.1。
 
 ### 0.1.0（2026-10-17）
 

@@ -31,6 +31,8 @@ from core.backtest import BacktestConfig
 from core.datafeed import CacheStore
 from core.importer import collect_paths, import_paths
 from core.market import MarketRequest, export_market_result, run_market
+from core.quant_generator import QuantProject, generate_quant_project
+from core.remote_deploy import RemoteDeployConfig, deploy_project
 from core.rust_engine import status as rust_status
 from core.settings import UserSettings, blend_hex, contrast_text, is_hex_color, load_settings, save_settings
 from core.indicator_catalog import all_indicators, get_indicator
@@ -72,7 +74,7 @@ SESSION_FILE = CONFIG_DIR / "last_session.json"
 DATA_DIR = PROJECT_ROOT / "data"
 IMPORT_DIR = DATA_DIR / "import"
 IMPORT_DIR.mkdir(parents=True, exist_ok=True)
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 
 
 def choose_font(root: tk.Misc) -> str:
@@ -2595,6 +2597,330 @@ class SettingsWindow(tk.Toplevel):
         self.destroy()
 
 
+
+class QuantDeployWindow(tk.Toplevel):
+    def __init__(self, app, request):
+        super().__init__(app)
+        self.app = app
+        self.request = request
+        self.font_family = app.font_family
+        self.meta = get_strategy_meta(request.strategy)
+        self.project: QuantProject | None = None
+        self.running = False
+        self.cancel_event = threading.Event()
+        self.msg_queue: queue.Queue = queue.Queue()
+        self._poll_after = None
+        self._closing = False
+        self.title("生成量化 · AKQuant")
+        self.configure(bg=BG)
+        width, height = 1080, 880
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        self.geometry(f"{width}x{height}+{max((screen_w - width) // 2, 10)}+{max((screen_h - height) // 2 - 10, 10)}")
+        self.minsize(920, 720)
+        self.transient(app)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self._build()
+        self._poll_after = self.after(120, self._poll)
+
+    def _build(self):
+        header = tk.Frame(self, bg=BG)
+        header.pack(fill="x", padx=18, pady=(14, 6))
+        titles = tk.Frame(header, bg=BG)
+        titles.pack(side="left")
+        tk.Label(titles, text="生成量化 · AKQuant", bg=BG, fg=TEXT, font=(self.font_family, 18, "bold")).pack(anchor="w")
+        tk.Label(
+            titles,
+            text=f"版本 {APP_VERSION} · 当前策略 → AKQuant 项目 → SSH 自动安装",
+            bg=BG,
+            fg=MUTED,
+            font=(self.font_family, 9),
+        ).pack(anchor="w", pady=(2, 0))
+        self.app._ghost_button(header, "关闭", self.close).pack(side="right")
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=18)
+        info = tk.Frame(self, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        info.pack(fill="x", padx=18, pady=(10, 8))
+        strategy_name = self.meta.name if self.meta else self.request.strategy
+        text = (
+            f"策略快照：{strategy_name}    "
+            f"股票：{self.request.symbol}    "
+            f"区间：{self.request.start} ~ {self.request.end}    "
+            f"复权：{self.request.trade_adjust or 'raw'}    "
+            f"初始资金：{self.request.config.initial_cash:,.0f}"
+        )
+        tk.Label(info, text=text, bg=PANEL, fg=TEXT, font=(self.font_family, 9), anchor="w").pack(fill="x", padx=12, pady=9)
+        tk.Label(
+            self,
+            text="v0.1.1 使用 AKQuant 信号回放回测架构：桌面端生成信号，远端 AKQuant 执行回测；实盘/实时信号重算将在后续版本扩展。",
+            bg=BG,
+            fg=AMBER,
+            font=(self.font_family, 8),
+            anchor="w",
+        ).pack(fill="x", padx=20)
+
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=18, pady=8)
+        body.grid_columnconfigure(0, weight=1)
+        local = tk.Frame(body, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        local.grid(row=0, column=0, sticky="ew")
+        tk.Label(local, text="1. 本地生成", bg=PANEL, fg=TEXT, font=(self.font_family, 11, "bold"), anchor="w").grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(10, 2))
+        tk.Label(local, text="输出目录", bg=PANEL, fg=MUTED, font=(self.font_family, 8)).grid(row=1, column=0, sticky="w", padx=12, pady=4)
+        self.parent_dir_var = tk.StringVar(value=str(PROJECT_ROOT / "exports" / "quant"))
+        ttk.Entry(local, textvariable=self.parent_dir_var, width=64).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=4)
+        local.grid_columnconfigure(1, weight=1)
+        self.app._ghost_button(local, "选择目录", self._choose_output_dir).grid(row=1, column=2, sticky="e", padx=(0, 12), pady=4)
+        actions = tk.Frame(local, bg=PANEL)
+        actions.grid(row=2, column=0, columnspan=3, sticky="w", padx=12, pady=(4, 2))
+        self.generate_button = self.app._secondary_button(actions, "生成本地 AKQuant 项目", self.generate_local)
+        self.generate_button.pack(side="left")
+        self.open_project_button = self.app._secondary_button(actions, "打开项目目录", self._open_project_dir, state=tk.DISABLED)
+        self.open_project_button.pack(side="left", padx=(8, 0))
+        self.project_label = tk.Label(local, text="尚未生成项目", bg=PANEL, fg=DIM, font=(self.font_family, 8), anchor="w", justify="left", wraplength=980)
+        self.project_label.grid(row=3, column=0, columnspan=3, sticky="w", padx=12, pady=(2, 4))
+        self.file_list = tk.Text(local, height=3, bg="#000000", fg="#ffffff", relief="flat", bd=0, padx=8, pady=4, font=(self.font_family, 8), state="disabled")
+        self.file_list.grid(row=4, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 10))
+
+        ssh = tk.Frame(body, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        ssh.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        tk.Label(ssh, text="2. SSH 自动安装", bg=PANEL, fg=TEXT, font=(self.font_family, 11, "bold"), anchor="w").grid(row=0, column=0, columnspan=6, sticky="w", padx=12, pady=(10, 2))
+        fields = (
+            ("IP / 主机", "host", "192.168.1.10", 18),
+            ("端口", "port", "22", 7),
+            ("用户名", "username", "root", 12),
+            ("密码", "password", "", 16),
+            ("远程目录", "remote_dir", "stock_strategy_quant", 20),
+        )
+        self.ssh_vars = {}
+        for index, (label, key, default, width) in enumerate(fields):
+            row = 1 + index // 3
+            col = (index % 3) * 2
+            tk.Label(ssh, text=label, bg=PANEL, fg=MUTED, font=(self.font_family, 8)).grid(row=row, column=col, sticky="w", padx=(12 if col == 0 else 8, 2), pady=4)
+            var = tk.StringVar(value=default)
+            self.ssh_vars[key] = var
+            entry = ttk.Entry(ssh, textvariable=var, width=width, show="*" if key == "password" else "")
+            entry.grid(row=row, column=col + 1, sticky="w", pady=4)
+        self.run_after_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ssh, text="安装后运行一次 AKQuant 回测", variable=self.run_after_var).grid(row=3, column=0, columnspan=3, sticky="w", padx=12, pady=(4, 2))
+        tk.Label(
+            ssh,
+            text="密码只用于本次 SSH 连接，不写入磁盘、不上传、不写日志。首次连接会自动信任主机指纹；生产环境建议改用 SSH Key。",
+            bg=PANEL,
+            fg=DIM,
+            font=(self.font_family, 8),
+            anchor="w",
+            justify="left",
+            wraplength=1000,
+        ).grid(row=4, column=0, columnspan=6, sticky="w", padx=12, pady=(2, 4))
+        install_row = tk.Frame(ssh, bg=PANEL)
+        install_row.grid(row=5, column=0, columnspan=6, sticky="w", padx=12, pady=(4, 10))
+        self.install_button = self.app._primary_button(install_row, "生成并 SSH 安装", self.generate_and_deploy)
+        self.install_button.pack(side="left")
+        self.stop_button = self.app._secondary_button(install_row, "停止", self.stop, state=tk.DISABLED)
+        self.stop_button.pack(side="left", padx=(8, 0))
+        self.ssh_status = tk.Label(install_row, text="", bg=PANEL, fg=DIM, font=(self.font_family, 8))
+        self.ssh_status.pack(side="left", padx=14)
+        self.progress = ttk.Progressbar(body, mode="indeterminate", style="Horizontal.TProgressbar")
+        self.progress.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        log_frame = tk.Frame(body, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        log_frame.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
+        body.grid_rowconfigure(3, weight=1)
+        self.log_text = tk.Text(log_frame, bg="#000000", fg="#ffffff", relief="flat", bd=0, wrap="word", padx=10, pady=8, font=(self.font_family, 8), state="disabled")
+        scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=scroll.set)
+        self.log_text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.log_text.tag_configure("info", foreground="#ffffff")
+        self.log_text.tag_configure("ok", foreground=GREEN)
+        self.log_text.tag_configure("warn", foreground=AMBER)
+        self.log_text.tag_configure("error", foreground=RED)
+
+    def _choose_output_dir(self):
+        path = filedialog.askdirectory(parent=self, title="选择量化项目输出目录", initialdir=str(PROJECT_ROOT / "exports"))
+        if path:
+            self.parent_dir_var.set(path)
+
+    def _log(self, message: str, tag: str = "info"):
+        if not self.log_text.winfo_exists():
+            return
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", message + "\n", tag)
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
+    def _set_running(self, running: bool):
+        self.running = running
+        state = tk.DISABLED if running else tk.NORMAL
+        self.generate_button.configure(state=state)
+        self.install_button.configure(state=state)
+        self.stop_button.configure(state=tk.NORMAL if running else tk.DISABLED)
+        if running:
+            self.progress.start(10)
+        else:
+            self.progress.stop()
+
+    def _set_project(self, project: QuantProject):
+        self.project = project
+        self.project_label.configure(text=f"项目目录：{project.path}")
+        self.file_list.configure(state="normal")
+        self.file_list.delete("1.0", "end")
+        self.file_list.insert("end", "\n".join(project.files))
+        self.file_list.configure(state="disabled")
+        self.open_project_button.configure(state=tk.NORMAL)
+        self.ssh_status.configure(text="项目已就绪，可以 SSH 安装", fg=GREEN)
+
+    def _worker_generate(self, parent_dir: str):
+        try:
+            self.msg_queue.put(("log", "开始生成 AKQuant 项目 ..."))
+            project = generate_quant_project(
+                self.request,
+                parent_dir,
+                progress=lambda message: self.msg_queue.put(("log", message)),
+            )
+            self.msg_queue.put(("generated_local", project))
+        except Exception as exc:
+            self.msg_queue.put(("error", (str(exc), traceback.format_exc())))
+
+    def generate_local(self):
+        if self.running:
+            return
+        parent_dir = self.parent_dir_var.get().strip() or str(PROJECT_ROOT / "exports" / "quant")
+        self._set_running(True)
+        self.ssh_status.configure(text="正在生成项目 ...", fg=MUTED)
+        threading.Thread(target=self._worker_generate, args=(parent_dir,), daemon=True).start()
+
+    def _read_deploy_config(self) -> RemoteDeployConfig:
+        try:
+            port = int(self.ssh_vars["port"].get().strip())
+        except ValueError as exc:
+            raise ValueError("SSH 端口必须是数字") from exc
+        host = self.ssh_vars["host"].get().strip()
+        username = self.ssh_vars["username"].get().strip()
+        password = self.ssh_vars["password"].get()
+        if not host:
+            raise ValueError("请填写 IP / 主机")
+        if not username:
+            raise ValueError("请填写用户名")
+        if not password:
+            raise ValueError("请填写 SSH 密码")
+        return RemoteDeployConfig(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            remote_dir=self.ssh_vars["remote_dir"].get().strip() or "stock_strategy_quant",
+            run_after_install=bool(self.run_after_var.get()),
+        )
+
+    def _worker_deploy(self, parent_dir: str, deploy_config):
+        try:
+            project = self.project
+            if project is None:
+                self.msg_queue.put(("log", "尚未生成项目，先生成本地项目 ..."))
+                project = generate_quant_project(
+                    self.request,
+                    parent_dir,
+                    progress=lambda message: self.msg_queue.put(("log", message)),
+                )
+                self.msg_queue.put(("generated_for_deploy", project))
+            self.msg_queue.put(("log", f"开始 SSH 部署到 {deploy_config.host}:{deploy_config.port} ..."))
+            result = deploy_project(
+                project,
+                deploy_config,
+                progress=lambda message: self.msg_queue.put(("log", message)),
+                cancel_event=self.cancel_event,
+            )
+            self.msg_queue.put(("deployed", result))
+        except Exception as exc:
+            self.msg_queue.put(("error", (str(exc), traceback.format_exc())))
+
+    def generate_and_deploy(self):
+        if self.running:
+            return
+        try:
+            deploy_config = self._read_deploy_config()
+        except Exception as exc:
+            messagebox.showerror("SSH 参数错误", str(exc), parent=self)
+            return
+        parent_dir = self.parent_dir_var.get().strip() or str(PROJECT_ROOT / "exports" / "quant")
+        self.cancel_event.clear()
+        self._set_running(True)
+        self.ssh_status.configure(text="正在生成/安装 ...", fg=MUTED)
+        self._log("目标：AKQuant 信号回放项目 · SSH 自动安装", "info")
+        threading.Thread(target=self._worker_deploy, args=(parent_dir, deploy_config), daemon=True).start()
+
+    def stop(self):
+        if self.running:
+            self.cancel_event.set()
+            self.ssh_status.configure(text="正在取消 ...", fg=AMBER)
+
+    def _open_project_dir(self):
+        if self.project is None:
+            return
+        try:
+            subprocess.Popen(["xdg-open", str(self.project.path)])
+        except Exception:
+            webbrowser.open(self.project.path.as_uri())
+
+    def _poll(self):
+        if self._closing or not self.winfo_exists():
+            return
+        while True:
+            try:
+                kind, payload = self.msg_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "log":
+                self._log(str(payload))
+                if str(payload).startswith("  "):
+                    self.ssh_status.configure(text=str(payload).strip())
+            elif kind == "generated_local":
+                self._set_project(payload)
+                self._set_running(False)
+                self._log(f"项目已生成: {payload.path}", "ok")
+            elif kind == "generated_for_deploy":
+                self._set_project(payload)
+                self._log(f"项目已生成: {payload.path}", "ok")
+            elif kind == "deployed":
+                self._set_running(False)
+                remote = payload.get("remote_path", "")
+                self.ssh_status.configure(text=f"安装完成: {remote}", fg=GREEN)
+                self._log(f"SSH 安装完成: {remote}", "ok")
+                self._log(f"远程运行: cd {remote} && ./run.sh", "ok")
+                if payload.get("ran_backtest"):
+                    self._log("远程 AKQuant 回测已运行，结果保存在远程 output/backtest_result.txt", "ok")
+                messagebox.showinfo(
+                    "安装完成",
+                    f"项目已安装到：\n{remote}\n\n远程运行：\ncd {remote} && ./run.sh",
+                    parent=self,
+                )
+            elif kind == "error":
+                self._set_running(False)
+                message, details = payload
+                self.ssh_status.configure(text="失败", fg=RED)
+                self._log(f"失败：{message}", "error")
+                self._log(details, "error")
+                messagebox.showerror("操作失败", message, parent=self)
+        self._poll_after = self.after(120, self._poll)
+
+    def close(self):
+        if self.running:
+            if not messagebox.askyesno("正在执行", "生成/安装正在进行，确定关闭窗口吗？", parent=self):
+                return
+            self.cancel_event.set()
+        self._closing = True
+        try:
+            if self._poll_after:
+                self.after_cancel(self._poll_after)
+        except Exception:
+            pass
+        try:
+            self.app.quant_window = None
+        except Exception:
+            pass
+        self.ssh_vars["password"].set("")
+        self.destroy()
+
+
 class StrategyStudio(ROOT_BASE):
     def __init__(self):
         super().__init__()
@@ -2608,6 +2934,7 @@ class StrategyStudio(ROOT_BASE):
         self.custom_editor: CustomStrategyEditor | None = None
         self.import_dialog: DataImportDialog | None = None
         self.market_window: MarketBacktestWindow | None = None
+        self.quant_window: QuantDeployWindow | None = None
         self.msg_queue: queue.Queue = queue.Queue()
         self.session = self._read_session()
         self.settings = load_settings()
@@ -2828,6 +3155,7 @@ class StrategyStudio(ROOT_BASE):
         for text, command in (
             ("导入数据", self._open_import_dialog),
             ("全市场回测", self._open_market_window),
+            ("生成量化", self._open_quant_window),
             ("设置", self._open_settings),
             ("模型接口文档", lambda: self._open_doc("MODEL_API.md")),
             ("策略接口文档", lambda: self._open_doc("STRATEGY_API.md")),
@@ -2994,6 +3322,12 @@ class StrategyStudio(ROOT_BASE):
             self._open_custom_editor,
         )
         custom_button.pack(fill="x", pady=(8, 2))
+        quant_button = self._secondary_button(
+            strategy_box,
+            "生成量化 · AKQuant 项目 / SSH 自动安装",
+            self._open_quant_window,
+        )
+        quant_button.pack(fill="x", pady=(0, 2))
 
         trade_box = self._section(inner, "03 交易参数", "信号 T 日收盘生成，T+1 开盘成交")
         row = self._row(trade_box, "初始资金")
@@ -3335,6 +3669,18 @@ class StrategyStudio(ROOT_BASE):
                 self.model_status.configure(text=f"模型 {slug} 不可用，请检查 artifacts", fg=RED)
         except Exception as exc:
             self.model_status.configure(text=f"模型加载失败：{exc}", fg=RED)
+
+    def _open_quant_window(self):
+        if self.quant_window is not None and self.quant_window.winfo_exists():
+            self.quant_window.lift()
+            self.quant_window.focus_set()
+            return
+        try:
+            base_request = self._collect_request()
+        except Exception as exc:
+            messagebox.showerror("参数错误", str(exc), parent=self)
+            return
+        self.quant_window = QuantDeployWindow(self, base_request)
 
     def _open_settings(self):
         if self.settings_window is not None and self.settings_window.winfo_exists():

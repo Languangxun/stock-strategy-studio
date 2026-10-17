@@ -3,3 +3,4 @@ pandas>=2.2
 numpy>=1.26
 lightgbm>=4.0
 tkinterdnd2>=0.4
+paramiko>=3.5
