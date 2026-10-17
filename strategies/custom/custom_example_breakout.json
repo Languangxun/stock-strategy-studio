@@ -1,0 +1,68 @@
+{
+  "slug": "custom_example_breakout",
+  "name": "示例：放量突破 20 日高",
+  "description": "收盘突破前 20 日最高、量比 >= 1.5、且在 MA60 上方；跌破 MA20 离场。",
+  "entry_logic": "all",
+  "exit_logic": "all",
+  "entry_conditions": [
+    {
+      "left": {
+        "indicator": "close",
+        "params": {}
+      },
+      "op": "gt",
+      "right": {
+        "type": "indicator",
+        "indicator": "n_high_prev",
+        "params": {
+          "period": 20
+        }
+      }
+    },
+    {
+      "left": {
+        "indicator": "volume_ratio",
+        "params": {
+          "period": 5
+        }
+      },
+      "op": "ge",
+      "right": {
+        "type": "value",
+        "value": 1.5
+      }
+    },
+    {
+      "left": {
+        "indicator": "close",
+        "params": {}
+      },
+      "op": "gt",
+      "right": {
+        "type": "indicator",
+        "indicator": "ma",
+        "params": {
+          "period": 60
+        }
+      }
+    }
+  ],
+  "exit_conditions": [
+    {
+      "left": {
+        "indicator": "close",
+        "params": {}
+      },
+      "op": "lt",
+      "right": {
+        "type": "indicator",
+        "indicator": "ma",
+        "params": {
+          "period": 20
+        }
+      }
+    }
+  ],
+  "created_at": "2026-10-17 11:19:29",
+  "updated_at": "2026-10-17 11:19:29"
+}

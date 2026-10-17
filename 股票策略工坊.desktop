@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=股票策略工坊
+Comment=AKShare 行情、自定义策略、可插拔模型回测
+Exec=/home/lan/桌面/stock_strategy_studio/launch.sh
+Path=/home/lan/桌面/stock_strategy_studio
+Icon=/home/lan/桌面/stock_strategy_studio/assets/icon.png
+Terminal=false
+Categories=Office;Finance;Utility;
+StartupWMClass=股票策略工坊
