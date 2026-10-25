@@ -291,10 +291,10 @@ def predict(bars: pd.DataFrame, params: dict, context: ModelContext) -> pd.DataF
 
 ### 7.3 SM701
 
-- LightGBM 二分类，预测次日上涨概率。
-- 44 维特征：动量、均线、波动、RSI、MACD、KDJ、BOLL、ATR、量能、市场环境、横截面排名。
+- 三个 LightGBM 二分类，分别预测 T+1 / T+5 / T+10 上涨概率。
+- 40 维特征：动量、均线、波动、RSI、MACD、KDJ、BOLL、ATR、量能、横截面排名。
 - 使用后复权数据；单标的回测时横截面排名以 0.5 中性值近似。
-- 策略阈值：买入 0.55、卖出 0.45（可在界面调整）。
+- 策略：h1 触发买卖，h5/h10 共振确认趋势；h1 阈值 0.55/0.45，h5/h10 趋势阈值 0.50（可在界面调整）。
 - 仅作接口示例，不代表策略有效性承诺。
 
 ---

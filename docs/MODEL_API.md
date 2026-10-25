@@ -2,7 +2,7 @@
 
 > 接口版本 1.0 · 适用于股票策略工坊
 > 目标：让任意“次日上涨概率 / 打分模型”以插件形式接入，不修改回测引擎和 GUI。
-> 内置示例：`sm701`（LightGBM，44 维量价 + 市场环境特征）。
+> 内置示例：`sm701`（LightGBM，40 维量价技术特征）。
 
 ---
 
@@ -52,10 +52,12 @@ class MyModel(BaseModel):
 models/
 ├── registry.py              # 注册表与插件加载器（勿改）
 ├── sm701_model.py           # 内置模型示例
-├── sm701_features.py        # SM701 的 44 维特征实现
+├── sm701_features.py        # SM701 的 40 维特征实现
 ├── artifacts/
 │   └── sm701/
-│       └── lgbm_model.txt   # 模型二进制文件
+│       ├── lgbm_model.txt      # h1 模型
+│       ├── lgbm_model_h5.txt   # h5 模型
+│       └── lgbm_model_h10.txt  # h10 模型
 └── plugins/
     └── your_model.py        # 你的模型插件（自动加载）
 ```
@@ -162,12 +164,12 @@ pred = model.predict(bars, {}, context)
 
 ### 5.1 组成
 
-- 模型：LightGBM `binary` 目标，预测“次日开盘买入、次日收盘卖出”的上涨概率。
-- 特征：44 维，包含动量、均线、波动、RSI、MACD、KDJ、布林、ATR、量比、
-  市场收益、市场宽度和横截面排名。
-- 模型文件：`models/artifacts/sm701/lgbm_model.txt`。
+- 模型：三个 LightGBM `binary` 目标，分别预测 T+1 / T+5 / T+10 上涨概率。
+- 特征：40 维，包含动量、均线、波动、RSI、MACD、KDJ、布林、ATR、量比和横截面排名。
+- 模型文件：`lgbm_model.txt`（h1）、`lgbm_model_h5.txt`、`lgbm_model_h10.txt`。
 - 适配器：`models/sm701_model.py`；特征实现：`models/sm701_features.py`。
-- 策略层：`strategies/builtin.py` 中的 `Sm701Strategy`，默认买入阈值 0.55、卖出阈值 0.45。
+- 策略层：`strategies/builtin.py` 中的 `Sm701Strategy`：h1 触发买卖，h5/h10 共振确认趋势；
+  默认 h1 买入阈值 0.55、卖出阈值 0.45，h5/h10 趋势阈值 0.50。
 - 模型使用后复权行情；交易模拟使用界面选择的复权口径（默认前复权）。
 
 ### 5.2 最小适配器
@@ -181,16 +183,26 @@ class Sm701Model(BaseModel):
         root = artifact_dir or Path(__file__).parent / "artifacts" / "sm701"
         super().__init__(root)
         import lightgbm as lgb
-        self.booster = lgb.Booster(model_file=str(root / "lgbm_model.txt"))
+        self.boosters = {
+            "h1": lgb.Booster(model_file=str(root / "lgbm_model.txt")),
+            "h5": lgb.Booster(model_file=str(root / "lgbm_model_h5.txt")),
+            "h10": lgb.Booster(model_file=str(root / "lgbm_model_h10.txt")),
+        }
 
     def predict(self, bars, params, context):
         features = compute_features(bars, context.benchmark)
-        matrix = features[self.booster.feature_name()].astype("float32")
-        scores = self.booster.predict(matrix).clip(0, 1)
+        matrix = features[self.boosters["h1"].feature_name()].astype("float32")
+        scores = {h: b.predict(matrix).clip(0, 1) for h, b in self.boosters.items()}
         return pd.DataFrame({
             "date": features["date"],
-            "score": scores,
-            "reason": [f"SM701 P(次日上涨)={p:.3f}" for p in scores],
+            "score": scores["h1"],
+            "score_h1": scores["h1"],
+            "score_h5": scores["h5"],
+            "score_h10": scores["h10"],
+            "reason": [
+                f"SM701 P(1/5/10日上涨)={a:.3f}/{b:.3f}/{c:.3f}"
+                for a, b, c in zip(scores["h1"], scores["h5"], scores["h10"])
+            ],
         })
 ```
 

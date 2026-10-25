@@ -41,10 +41,15 @@ class ModelApiTest(unittest.TestCase):
         model = create_model("sm701")
         pred = model.predict(self.bars, {}, self.context)
         self.assertFalse(pred.empty)
-        self.assertEqual(set(pred.columns), {"date", "score", "reason"})
-        self.assertTrue((pred["score"] >= 0).all())
-        self.assertTrue((pred["score"] <= 1).all())
+        self.assertEqual(
+            set(pred.columns), {"date", "score", "score_h1", "score_h5", "score_h10", "reason"}
+        )
+        for col in ("score", "score_h1", "score_h5", "score_h10"):
+            self.assertTrue((pred[col] >= 0).all())
+            self.assertTrue((pred[col] <= 1).all())
+        self.assertTrue((pred["score"] == pred["score_h1"]).all())
         self.assertTrue(pred["reason"].str.contains("SM701").all())
+        self.assertTrue(pred["reason"].str.contains("1/5/10").all())
         again = model.predict(self.bars, {}, self.context)
         self.assertAlmostEqual(float(pred.iloc[-1]["score"]), float(again.iloc[-1]["score"]))
 

@@ -237,8 +237,9 @@ class Sm701Strategy(BaseStrategy):
         name="SM701 概率模型",
         params=(
             ParamSpec("model", "预测模型", "model", "sm701"),
-            ParamSpec("buy_threshold", "买入概率阈值", "float", 0.55, 0.50, 0.95, 0.01),
-            ParamSpec("sell_threshold", "卖出概率阈值", "float", 0.45, 0.05, 0.70, 0.01),
+            ParamSpec("buy_threshold", "h1 买入概率阈值", "float", 0.55, 0.50, 0.95, 0.01),
+            ParamSpec("sell_threshold", "h1 卖出概率阈值", "float", 0.45, 0.05, 0.70, 0.01),
+            ParamSpec("trend_threshold", "h5/h10 趋势确认阈值", "float", 0.50, 0.05, 0.95, 0.01),
         ),
         requires_model=True,
         default_model="sm701",
@@ -247,6 +248,8 @@ class Sm701Strategy(BaseStrategy):
     def generate(self, bars, params, context):
         pred = context.model.predict(context.model_bars, {}, context.model_context)
         prob = pred.set_index("date")["score"]
+        p5 = pred.set_index("date")["score_h5"]
+        p10 = pred.set_index("date")["score_h10"]
         ...
 ```
 
@@ -254,6 +257,7 @@ class Sm701Strategy(BaseStrategy):
 - 预测行与交易行按日期对齐；缺失时最多前向填充 5 日。
 - 模型和交易行情可以是不同复权口径，但日期要来自同一交易日历。
 - 阈值、市场过滤、仓位和退出规则属于策略层，不要写进模型。
+- SM701 三周期共振：h1 达标且 h5/h10 均高于趋势阈值才入场；h1 低于卖出阈值或 h5/h10 任一走弱离场。
 
 ---
 
@@ -263,7 +267,7 @@ class Sm701Strategy(BaseStrategy):
 |---|---|---|
 | `dual_ma` | 双均线趋势 | 快线上穿慢线且收盘在慢线上方入场；死叉或跌破慢线离场 |
 | `breakout` | 通道突破 | 收盘突破前 N 日高点入场；跌破前 M 日低点离场；可放量过滤 |
-| `sm701` | SM701 概率模型 | 模型分数达到买入阈值入场；低于卖出阈值离场；可加大盘 MA20 过滤 |
+| `sm701` | SM701 概率模型 | h1 分数达到买入阈值且 h5/h10 共振向上入场；h1 低于卖出阈值或 h5/h10 走弱离场；可加大盘 MA20 过滤 |
 | `example_rsi` | 示例插件 · RSI 反转 | RSI 超卖入场、回到中枢离场；可只做 MA20 上方 |
 | `custom_*` | 自定义条件策略 | 由程序内编辑器生成，指标/比较/AND-OR 自由组合 |
 

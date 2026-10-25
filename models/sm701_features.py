@@ -11,8 +11,8 @@ FEATURES_SM701 = [
     "macd_dif", "macd_dea", "macd_hist",
     "kdj_k", "kdj_d", "kdj_j",
     "bollpos", "hilo20", "atr_n",
-    "vr5", "vr20", "logvol", "amp", "gap", "cpos", "updays20",
-    "mkt1", "mkt5", "mkt20", "breadth5",
+    "amp", "gap", "cpos",
+    "vr5", "vr20", "logvol", "updays20",
     "r_ret5", "r_ret20", "r_ret60", "r_ma20r", "r_rsi14",
     "r_vr20", "r_vol20", "r_logvol",
 ]
@@ -27,38 +27,16 @@ def _prepare_bars(bars: pd.DataFrame) -> pd.DataFrame:
     df = bars.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.normalize().astype("datetime64[ns]")
     df = df.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+    if "volume" not in df.columns:
+        if "vol" in df.columns:
+            df["volume"] = df["vol"]
+        else:
+            raise ValueError("缺少行情字段: volume")
     for col in ["open", "high", "low", "close", "volume"]:
         if col not in df.columns:
             raise ValueError(f"缺少行情字段: {col}")
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
-
-
-def _benchmark_features(bars: pd.DataFrame, benchmark: pd.DataFrame | None) -> pd.DataFrame:
-    if benchmark is None or benchmark.empty:
-        out = bars[["date"]].copy()
-        for col in ("mkt1", "mkt5", "mkt20"):
-            out[col] = 0.0
-        out["breadth5"] = 0.5
-        return out
-    b = benchmark.copy()
-    b["date"] = pd.to_datetime(b["date"]).dt.normalize().astype("datetime64[ns]")
-    b = b.sort_values("date").drop_duplicates("date", keep="last")
-    close = pd.to_numeric(b["close"], errors="coerce")
-    b["mkt1"] = close.pct_change(1, fill_method=None)
-    b["mkt5"] = close.pct_change(5, fill_method=None)
-    b["mkt20"] = close.pct_change(20, fill_method=None)
-    b["breadth5"] = (b["mkt1"] > 0).astype(float).rolling(5, min_periods=1).mean()
-    aligned = pd.merge_asof(
-        bars[["date"]].sort_values("date"),
-        b[["date", "mkt1", "mkt5", "mkt20", "breadth5"]].sort_values("date"),
-        on="date",
-        direction="backward",
-    )
-    aligned["breadth5"] = aligned["breadth5"].fillna(0.5)
-    for col in ("mkt1", "mkt5", "mkt20"):
-        aligned[col] = aligned[col].fillna(0.0)
-    return aligned
 
 
 def compute_features(
@@ -142,10 +120,6 @@ def compute_features(
     feats["logvol"] = np.log1p(volume)
 
     feats["updays20"] = (feats["ret1"] > 0).astype(float).rolling(20, min_periods=20).mean()
-
-    market = _benchmark_features(df, benchmark)
-    for col in ("mkt1", "mkt5", "mkt20", "breadth5"):
-        feats[col] = market[col].values
 
     if neutral_ranks:
         for col in RANK_FEATURES:

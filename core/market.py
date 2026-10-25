@@ -78,9 +78,16 @@ def _aggregate(rows: pd.DataFrame, universe_count: int, failures: int, bench_ret
             "best_return_pct": None,
             "worst_symbol": None,
             "worst_return_pct": None,
+            # 新增年化收益统计字段
+            "avg_annual_return_pct": None,
+            "median_annual_return_pct": None,
+            "best_annual_return_pct": None,
+            "worst_annual_return_pct": None,
         }
     returns = rows["total_return_pct"].astype(float)
     drawdowns = rows["max_drawdown_pct"].astype(float)
+    # 年化收益列已在行数据中
+    annuals = rows["annual_return_pct"].astype(float)
     return {
         "universe": universe_count,
         "success": int(len(rows)),
@@ -96,6 +103,11 @@ def _aggregate(rows: pd.DataFrame, universe_count: int, failures: int, bench_ret
         "best_return_pct": float(rows.iloc[0]["total_return_pct"]),
         "worst_symbol": str(rows.iloc[-1]["symbol"]),
         "worst_return_pct": float(rows.iloc[-1]["total_return_pct"]),
+        # 年化收益统计
+        "avg_annual_return_pct": float(annuals.mean()),
+        "median_annual_return_pct": float(annuals.median()),
+        "best_annual_return_pct": float(annuals.max()),
+        "worst_annual_return_pct": float(annuals.min()),
     }
 
 
@@ -294,6 +306,8 @@ def export_market_result(result: MarketResult, directory: str | Path) -> Path:
         f"- 中位收益：{summary.get('median_return_pct'):.2f}%" if summary.get("median_return_pct") is not None else "- 中位收益：--",
         f"- 正收益占比：{summary.get('positive_pct'):.2f}%" if summary.get("positive_pct") is not None else "- 正收益占比：--",
         f"- 平均最大回撤：{summary.get('avg_drawdown_pct'):.2f}%" if summary.get("avg_drawdown_pct") is not None else "- 平均最大回撤：--",
+        f"- 平均年化收益：{summary.get('avg_annual_return_pct'):.2f}%" if summary.get('avg_annual_return_pct') is not None else "- 平均年化收益：--",
+        f"- 中位年化收益：{summary.get('median_annual_return_pct'):.2f}%" if summary.get('median_annual_return_pct') is not None else "- 中位年化收益：--",
         f"- 基准收益：{summary.get('benchmark_return_pct'):.2f}%" if summary.get("benchmark_return_pct") is not None else "- 基准收益：--",
         f"- 引擎：{'Rust' if summary.get('native') else 'Python'}",
         "",

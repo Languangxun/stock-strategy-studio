@@ -115,11 +115,12 @@ class Sm701Strategy(BaseStrategy):
     meta = StrategyMeta(
         slug="sm701",
         name="SM701 概率模型",
-        description="调用可插拔预测模型，用上涨概率阈值生成买卖信号，可选大盘 MA20 过滤。",
+        description="调用三周期 SM701 模型，h1 概率触发买卖，h5/h10 共振确认趋势，可选大盘 MA20 过滤。",
         params=(
             ParamSpec("model", "预测模型", "model", "sm701", choices=("sm701",)),
-            ParamSpec("buy_threshold", "买入概率阈值", "float", 0.55, 0.50, 0.95, 0.01),
-            ParamSpec("sell_threshold", "卖出概率阈值", "float", 0.45, 0.05, 0.70, 0.01),
+            ParamSpec("buy_threshold", "h1 买入概率阈值", "float", 0.55, 0.50, 0.95, 0.01),
+            ParamSpec("sell_threshold", "h1 卖出概率阈值", "float", 0.45, 0.05, 0.70, 0.01),
+            ParamSpec("trend_threshold", "h5/h10 趋势确认阈值", "float", 0.50, 0.05, 0.95, 0.01),
             ParamSpec("market_filter", "大盘 MA20 过滤", "bool", False),
         ),
         requires_model=True,
@@ -144,13 +145,25 @@ class Sm701Strategy(BaseStrategy):
             return out
         pred = pred.copy()
         pred["date"] = pd.to_datetime(pred["date"]).dt.normalize().astype("datetime64[ns]")
-        prob = pred.drop_duplicates("date", keep="last").set_index("date")["score"].astype(float).clip(0.0, 1.0)
-        reason_map = pred.drop_duplicates("date", keep="last").set_index("date").get("reason", pd.Series("", index=pred["date"]))
+        pred = pred.drop_duplicates("date", keep="last").set_index("date")
+        prob = pred["score"].astype(float).clip(0.0, 1.0)
+        reason_map = pred.get("reason", pd.Series("", index=pred.index))
         dates = _index(bars)
         aligned = prob.reindex(dates).ffill(limit=5).clip(0.0, 1.0)
         aligned_reason = reason_map.reindex(dates).ffill(limit=5)
         entry = aligned >= float(params["buy_threshold"])
-        exit_ = aligned <= float(params["sell_threshold"])
+        h1_exit = aligned <= float(params["sell_threshold"])
+        exit_ = h1_exit.copy()
+        trend_exit = pd.Series(False, index=dates)
+        market_exit = pd.Series(False, index=dates)
+        if "score_h5" in pred.columns and "score_h10" in pred.columns:
+            trend = float(params.get("trend_threshold", 0.50))
+            p5 = pred["score_h5"].astype(float).reindex(dates).ffill(limit=5).clip(0.0, 1.0)
+            p10 = pred["score_h10"].astype(float).reindex(dates).ffill(limit=5).clip(0.0, 1.0)
+            confirm = (p5 >= trend) & (p10 >= trend)
+            entry &= confirm.fillna(False)
+            trend_exit = ((p5 <= trend) | (p10 <= trend)).fillna(False)
+            exit_ |= trend_exit
         if params["market_filter"] and context.benchmark is not None and not context.benchmark.empty:
             bench = context.benchmark.copy()
             bench["date"] = pd.to_datetime(bench["date"]).dt.normalize().astype("datetime64[ns]")
@@ -164,10 +177,14 @@ class Sm701Strategy(BaseStrategy):
             ).set_index("date")
             above = (market["close"] > market["ma20"]).reindex(dates).fillna(False)
             entry &= above.values
-            exit_ |= (~above).values
+            market_exit = (~above).fillna(False)
+            exit_ |= market_exit
         out["entry"] = entry.fillna(False).astype(bool)
         out["exit"] = exit_.fillna(False).astype(bool)
         out["score"] = (aligned.fillna(0.0) * 100.0).values
         out.loc[out["entry"], "entry_reason"] = aligned_reason[out["entry"]].fillna("模型概率达标")
-        out.loc[out["exit"], "exit_reason"] = "模型概率低于卖出阈值"
+        exit_reason = pd.Series("h1 概率低于卖出阈值", index=dates)
+        exit_reason[trend_exit & ~h1_exit] = "h5/h10 趋势转弱"
+        exit_reason[market_exit & ~h1_exit & ~trend_exit] = "大盘跌破 MA20"
+        out.loc[out["exit"], "exit_reason"] = exit_reason[out["exit"].values].values
         return out
