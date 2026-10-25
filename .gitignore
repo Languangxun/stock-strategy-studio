@@ -1,9 +1,10 @@
 .venv/
+.idea/
 __pycache__/
 *.py[cod]
-data/cache.db
-data/cache.db-shm
-data/cache.db-wal
+data/*.db
+data/*.db-shm
+data/*.db-wal
 config/last_session.json
 exports/*
 !exports/.gitkeep

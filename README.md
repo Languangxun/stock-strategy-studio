@@ -7,7 +7,7 @@
 - **AKShare 行情**：东方财富 / 腾讯 / 新浪多通道自动回退，SQLite 本地缓存。
 - **自定义策略**：程序内条件编辑器，支持 42 个技术指标、双指标比较、AND/OR 组合、保存/编辑/删除。
 - **策略扩展**：双均线、通道突破、RSI 示例；也支持放入 `strategies/plugins/*.py` 自动扩展。
-- **可接入预测模型**：模型接口 + 自动发现；内置 **SM701 LightGBM** 示例（44 维特征）。
+- **可接入预测模型**：模型接口 + 自动发现；内置 **SM701 LightGBM** 示例（40 维特征）。
 - **高对比 GUI**：纯黑背景、亮青强调色、纯白文字；默认 **红涨绿跌**；参数表单、净值/回撤曲线、K 线交易点、交易明细、日志。
 - **K 线交互**：滚轮缩放、拖拽平移、十字光标、成交量、MA/EMA 均线和买卖标记。
 - **个性化设置**：上涨/下跌/买卖/策略线/基准线/回撤线/均线颜色，MA/EMA 类型与周期，自定义指标默认参数。
@@ -305,12 +305,12 @@ class MyModel(BaseModel):
 完整契约、数据字段、因果要求和 **SM701 示例**见 [`docs/MODEL_API.md`](docs/MODEL_API.md)。
 
 当前内置 `SM701`：
-- 模型文件：`models/artifacts/sm701/lgbm_model.txt`
+- 模型文件：`models/artifacts/sm701/lgbm_model.txt`（h1）+ `lgbm_model_h5.txt` + `lgbm_model_h10.txt`
 - 适配器：`models/sm701_model.py`
-- 44 维特征：`models/sm701_features.py`
-- 策略：`strategies/builtin.py::Sm701Strategy`
-- 模型训练来源：本机原有 `sm701` / `ai-quant` 算法资产；训练使用后复权行情。
-- 单标的回测时横截面排名特征退化为中性 0.5，市场环境用基准指数近似，结果仅供演示。
+- 40 维特征：`models/sm701_features.py`
+- 策略：`strategies/builtin.py::Sm701Strategy`（h1 触发，h5/h10 共振确认趋势）
+- 模型训练来源：本机 `sm701` 项目生产定稿 `production/prod_h1/h5/h10_tech.txt`；训练使用后复权行情。
+- 单标的回测时横截面排名特征退化为中性 0.5，结果仅供演示。
 
 ---
 
@@ -356,7 +356,7 @@ stock_strategy_studio/
 ├── models/
 │   ├── registry.py            # 模型注册与插件加载
 │   ├── sm701_model.py         # SM701 示例适配器
-│   ├── sm701_features.py      # 44 维特征
+│   ├── sm701_features.py      # 40 维特征
 │   ├── artifacts/sm701/       # 模型文件
 │   └── plugins/               # 自定义模型
 ├── strategies/
@@ -459,3 +459,9 @@ stock_strategy_studio/
 - SM701 模型与特征口径来自本机原有量化项目资产，作为“模型接入”示例随项目保留。
 - 本项目不包含任何 API Key，也不上传行情或交易数据。
 - 仅用于学习、研究和策略验证，不构成投资建议；据此交易的风险由使用者自行承担。
+
+---
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。行情数据版权归各自数据源所有，使用数据请遵守对应数据源的服务条款。
